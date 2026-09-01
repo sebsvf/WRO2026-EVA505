@@ -1,0 +1,61 @@
+# Global configuration for the Raspberry Pi 5 software stack.
+# All hardware-dependent values are grouped here so nothing is hard-coded
+# inside the application modules. Values marked TODO must be confirmed
+# against the physical robot before competition.
+
+camera:
+  resolution: [640, 480]
+  target_fps: 25
+  # Locked exposure/white balance values are written here by
+  # camera/calibration.py after the on-site calibration routine.
+  exposure_us: null          # TODO: set after calibration (auto-exposure disabled in competition)
+  awb_gains: null            # TODO: set after calibration [red_gain, blue_gain]
+
+roi:
+  # Lane ROI: lower portion of the frame, used for lane_error / curvature.
+  lane_roi_y_range: [0.55, 1.0]   # fraction of frame height [top, bottom]
+  # Pillar ROI: wider/upper region, used for early pillar detection.
+  pillar_roi_y_range: [0.30, 0.85]
+
+hsv_thresholds:
+  # TODO: recalibrate on the actual competition mat/lighting using
+  # vision/hsv_config.py's interactive tuning helper before every event.
+  lane_boundary:
+    lower: [0, 0, 0]
+    upper: [180, 60, 60]
+  pillar_red:
+    lower: [0, 120, 70]
+    upper: [10, 255, 255]
+  pillar_red_high:      # red wraps around hue 0/180 in OpenCV's HSV space
+    lower: [170, 120, 70]
+    upper: [180, 255, 255]
+  pillar_green:
+    lower: [45, 80, 60]
+    upper: [85, 255, 255]
+  parking_marker:
+    lower: [130, 80, 60]     # TODO: confirm actual parking marker color
+    upper: [160, 255, 255]
+
+control:
+  steering:
+    kp: 0.45          # TODO: tune experimentally
+    kd: 0.12          # TODO: tune experimentally
+    curvature_gain: 0.30
+    max_angle_deg: 30      # +/- from center, mechanical limit from Table 2
+    center_deg: 90
+  pillar_offset:
+    bias_deg: 8         # additional steering bias while a pillar is being passed
+    ramp_step_deg: 1.5  # per-frame ramp rate back to center after clearing
+
+fsm:
+  min_confidence: 0.55
+  lost_lane_stop_timeout_s: 1.0
+  laps_required: 3
+  corner_sections_per_lap: 4
+
+serial:
+  port: /dev/serial0     # TODO: confirm against final GPIO UART assignment
+  baudrate: 115200
+  read_timeout_s: 0.05
+  heartbeat_period_s: 0.1
+  watchdog_reply_timeout_s: 0.5
