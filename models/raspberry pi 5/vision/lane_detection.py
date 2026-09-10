@@ -23,8 +23,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from raspberry_pi.vision.hsv_config import as_numpy_bounds
-
+from hsv_config import as_numpy_bounds
 
 @dataclass
 class LaneEstimate:
