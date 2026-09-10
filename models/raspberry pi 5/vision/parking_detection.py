@@ -23,7 +23,7 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-from raspberry_pi.vision.hsv_config import as_numpy_bounds
+from hsv_config import as_numpy_bounds
 
 # TODO: confirm against the actual parking marker width in the current
 # WRO Future Engineers field spec before relying on this for the blind
@@ -46,6 +46,11 @@ def estimate_parking_zone(frame: np.ndarray, hsv_thresholds: dict,
 
     lower, upper = as_numpy_bounds(hsv_thresholds["parking_marker"])
     mask = cv2.inRange(hsv, lower, upper)
+
+    cv2.imshow(
+    "PARKING MASK",
+    mask
+)
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 
