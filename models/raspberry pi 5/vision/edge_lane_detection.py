@@ -1,366 +1,65 @@
-"""
-edge_lane_detection.py
-
-WRO Future Engineers lane detection.
-
-Approach:
-    - Canny edge detection
-    - Hough line detection
-    - Left/right boundary estimation
-    - Lane center estimation
-
-Output:
-    lane_error : float (-1 to 1)
-                  negative -> lane center is left
-                  positive -> lane center is right
-
-    curvature : float
-                  rough turning direction
-
-    confidence : float
-"""
-
+"""Canny/Hough diagnostic, using x(y) to handle vertical walls."""
 
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
+from .common import validate_frame
 
 
 @dataclass
 class LaneEstimate:
-
     lane_error: float
     curvature: float
     confidence: float
-
     left_line: tuple | None
     right_line: tuple | None
 
 
-
-
-def _roi_mask(frame):
-
-    """
-    Keep only the region where the track exists.
-
-    WRO camera is low mounted,
-    so ignore sky/walls.
-    """
-
-    h,w = frame.shape[:2]
-
-
-    mask = np.zeros_like(frame)
-
-
-    polygon = np.array([
-        [
-            (0, int(h*0.35)),
-            (w, int(h*0.35)),
-            (w, h),
-            (0, h)
-        ]
-    ])
-
-
-    cv2.fillPoly(
-        mask,
-        polygon,
-        (255,255,255)
-    )
-
-
-    return cv2.bitwise_and(
-        frame,
-        mask
-    )
-
-
-
-
-def _line_angle(x1,y1,x2,y2):
-
-    return np.arctan2(
-        y2-y1,
-        x2-x1
-    )
-
-
-
-
-
 def estimate_lane(frame):
-
-
-    h,w = frame.shape[:2]
-
-
-    roi = _roi_mask(frame)
-
-
-    gray = cv2.cvtColor(
-        roi,
-        cv2.COLOR_BGR2GRAY
+    validate_frame(frame)
+    h, w = frame.shape[:2]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 150)
+    edges[: int(h * 0.35)] = 0  # Mask AFTER Canny: no artificial ROI edge.
+    lines = cv2.HoughLinesP(
+        edges, 1, np.pi / 180, 20, minLineLength=max(12, int(h * 0.08)), maxLineGap=int(h * 0.1)
     )
-
-
-    blur=cv2.GaussianBlur(
-        gray,
-        (5,5),
-        0
-    )
-
-
-    edges=cv2.Canny(
-        blur,
-        50,
-        150
-    )
-
-
-
-    lines=cv2.HoughLinesP(
-        edges,
-        rho=1,
-        theta=np.pi/180,
-        threshold=20,
-        minLineLength=30,
-        maxLineGap=80
-    )
-
-
-
-    debug=frame.copy()
-
-
-
-    if lines is None:
-
-        return LaneEstimate(
-            0.0,
-            0.0,
-            0.0,
-            None,
-            None
-        )
-
-
-
-    left_candidates=[]
-    right_candidates=[]
-
-
-
-    for line in lines:
-
-        x1,y1,x2,y2=line[0]
-
-
-        angle=_line_angle(
-            x1,y1,x2,y2
-        )
-
-
-        angle_deg=np.degrees(angle)
-
-
-        length=np.sqrt(
-            (x2-x1)**2+
-            (y2-y1)**2
-        )
-
-
-        # ignore horizontal lines
-        if abs(angle_deg)<20:
-            continue
-
-
-        # left wall
-        if angle_deg < -10:
-
-            left_candidates.append(
-                (
-                    length,
-                    (x1,y1,x2,y2)
-                )
+    sides = [[], []]
+    if lines is not None:
+        for raw in lines.reshape(-1, 4):
+            x1, y1, x2, y2 = map(int, raw)
+            if abs(y2 - y1) < max(5, abs(x2 - x1) * 0.35):
+                continue
+            slope = (x2 - x1) / (y2 - y1)
+            intercept = x1 - slope * y1
+            bottom = slope * (h * 0.85) + intercept
+            if not -w * 0.25 <= bottom <= w * 1.25:
+                continue
+            side = 0 if bottom < w / 2 else 1
+            sides[side].append(
+                (float(np.hypot(x2 - x1, y2 - y1)), slope, intercept, (x1, y1, x2, y2))
             )
-
-
-        # right wall
-        elif angle_deg > 10:
-
-            right_candidates.append(
-                (
-                    length,
-                    (x1,y1,x2,y2)
-                )
-            )
-
-
-
-
-    left_line=None
-    right_line=None
-
-
-
-    if left_candidates:
-
-        left_line=max(
-            left_candidates,
-            key=lambda x:x[0]
-        )[1]
-
-
-    if right_candidates:
-
-        right_line=max(
-            right_candidates,
-            key=lambda x:x[0]
-        )[1]
-
-
-
-    # Draw debug
-
-    if left_line:
-
-        cv2.line(
-            debug,
-            left_line[:2],
-            left_line[2:],
-            (0,255,0),
-            3
-        )
-
-
-    if right_line:
-
-        cv2.line(
-            debug,
-            right_line[:2],
-            right_line[2:],
-            (0,0,255),
-            3
-        )
-
-
-
-    cv2.imshow(
-        "EDGE",
-        edges
-    )
-
-
-    cv2.imshow(
-        "HOUGH LINES",
-        debug
-    )
-
-
-
-    if left_line is None or right_line is None:
-
+    best = [max(items, key=lambda v: v[0]) if items else None for items in sides]
+    left, right = best
+    if left is None or right is None:
         return LaneEstimate(
-            0.0,
-            0.0,
-            0.3,
-            left_line,
-            right_line
+            0,
+            0,
+            0.3 if left or right else 0,
+            left[3] if left else None,
+            right[3] if right else None,
         )
-
-
-
-    # Estimate where the boundaries reach robot level
-
-    y_target=int(h*0.85)
-
-
-
-    def interpolate(line):
-
-        x1,y1,x2,y2=line
-
-        if y2==y1:
-            return x1
-
-        return int(
-            x1+
-            (y_target-y1)
-            *
-            (x2-x1)
-            /
-            (y2-y1)
-        )
-
-
-
-    left_x=interpolate(left_line)
-    right_x=interpolate(right_line)
-
-
-
-    lane_center=(
-        left_x+
-        right_x
-    )/2
-
-
-
-    image_center=w/2
-
-
-
-    lane_error=(
-        image_center-
-        lane_center
-    )/image_center
-
-
-
-    lane_error=float(
-        np.clip(
-            lane_error,
-            -1,
-            1
-        )
-    )
-
-
-
-    # rough curvature
-
-    left_bottom=left_x
-    right_bottom=right_x
-
-
-    width_lane=right_bottom-left_bottom
-
-
-    curvature=(
-        width_lane-w
-    )/w
-
-
-
-    confidence=0.0
-
-
-    if left_line:
-        confidence+=0.5
-
-    if right_line:
-        confidence+=0.5
-
-
-
+    near = [item[1] * h * 0.85 + item[2] for item in best]
+    far = [item[1] * h * 0.45 + item[2] for item in best]
+    if not w * 0.12 < near[1] - near[0] < w * 1.5 or far[0] >= far[1]:
+        return LaneEstimate(0, 0, 0, left[3], right[3])
+    center_near, center_far = np.mean(near), np.mean(far)
     return LaneEstimate(
-        lane_error,
-        float(curvature),
-        confidence,
-        left_line,
-        right_line
+        float(np.clip((center_near - w / 2) / (w / 2), -1, 1)),
+        float(np.clip((center_far - center_near) / (w / 2), -1, 1)),
+        1.0,
+        left[3],
+        right[3],
     )

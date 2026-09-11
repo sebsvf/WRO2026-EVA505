@@ -1,96 +1,107 @@
-"""
-hsv_config.py
---------------
-Loading/saving of HSV threshold sets and a small interactive tuning
-helper. Keeping this separate from lane_detection.py / obstacle_detection.py
-means the thresholds can be recalibrated on competition day (different
-mat, different lighting) without touching any detection logic.
-"""
+"""Validated HSV intervals and config-relative calibration storage."""
 
-import yaml
+import os
+import tempfile
+from functools import lru_cache
+from pathlib import Path
+
+import cv2
 import numpy as np
+import yaml
+
+DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "config.yaml"
 
 
-def load_hsv_thresholds(config_path="raspberry_pi/config/config.yaml"):
-    with open(config_path, "r") as f:
-        cfg = yaml.safe_load(f)
-    return cfg["hsv_thresholds"]
+@lru_cache(maxsize=128)
+def _bounds(lower, upper):
+    lo, hi = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    if lo.shape != (3,) or hi.shape != (3,):
+        raise ValueError("HSV bounds must each have three elements")
+    for bound in (lo, hi):
+        if (
+            not np.all(np.isfinite(bound))
+            or np.any(bound != np.floor(bound))
+            or np.any(bound < 0)
+            or np.any(bound > [179, 255, 255])
+        ):
+            raise ValueError("HSV range: H 0..179, S/V 0..255")
+    if np.any(lo > hi):
+        raise ValueError("HSV lower must not exceed upper")
+    lo, hi = lo.astype(np.uint8), hi.astype(np.uint8)
+    lo.flags.writeable = hi.flags.writeable = False
+    return lo, hi
 
 
-def save_hsv_thresholds(thresholds, config_path="raspberry_pi/config/config.yaml"):
-    with open(config_path, "r") as f:
-        cfg = yaml.safe_load(f)
+def as_numpy_bounds(bounds):
+    return _bounds(tuple(bounds["lower"]), tuple(bounds["upper"]))
+
+
+def color_mask(hsv, bounds):
+    ranges = [bounds] if isinstance(bounds, dict) else bounds
+    if not isinstance(ranges, (list, tuple)) or not ranges:
+        raise ValueError("Missing HSV intervals")
+    result = np.zeros(hsv.shape[:2], np.uint8)
+    for interval in ranges:
+        lower, upper = as_numpy_bounds(interval)
+        cv2.bitwise_or(result, cv2.inRange(hsv, lower, upper), dst=result)
+    return result
+
+
+def load_hsv_thresholds(config_path=DEFAULT_CONFIG):
+    cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    thresholds = cfg["hsv_thresholds"]
+    for bounds in thresholds.values():
+        for interval in [bounds] if isinstance(bounds, dict) else bounds:
+            as_numpy_bounds(interval)
+    return thresholds
+
+
+def save_hsv_thresholds(thresholds, config_path=DEFAULT_CONFIG):
+    path = Path(config_path).resolve()
+    for bounds in thresholds.values():
+        for interval in [bounds] if isinstance(bounds, dict) else bounds:
+            as_numpy_bounds(interval)
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
     cfg["hsv_thresholds"] = thresholds
-    with open(config_path, "w") as f:
-        yaml.safe_dump(cfg, f, sort_keys=False)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, suffix=".yaml.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            yaml.safe_dump(cfg, stream, sort_keys=False, allow_unicode=True)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
-def as_numpy_bounds(bounds: dict):
-    """Convert a {'lower': [...], 'upper': [...]} dict to np.uint8 arrays."""
-    return (np.array(bounds["lower"], dtype=np.uint8),
-            np.array(bounds["upper"], dtype=np.uint8))
-
-
-def interactive_tune(camera, label, config_path="raspberry_pi/config/config.yaml"):
-    """
-    Minimal OpenCV trackbar-based tuner. Run this manually on the
-    Raspberry Pi (with a display or VNC) the day of the competition to
-    re-tune a single color range against the actual mat and lighting.
-
-    Usage:
-        python -m raspberry_pi.vision.hsv_config <label>
-
-    Press 's' to save the current sliders into config.yaml, 'q' to quit
-    without saving.
-    """
-    import cv2
-
-    def _nothing(_):
-        pass
-
-    window = f"HSV tuning: {label}"
+def interactive_tune(camera, label, config_path=DEFAULT_CONFIG):
+    """Requires opencv-python GUI build instead of opencv-python-headless."""
+    thresholds = load_hsv_thresholds(config_path)
+    bounds = thresholds[label]
+    if not isinstance(bounds, dict):
+        raise ValueError("Tune each split interval separately")
+    window = f"HSV: {label}"
+    names = ["H min", "S min", "V min", "H max", "S max", "V max"]
     cv2.namedWindow(window)
-    for name, default in [("H min", 0), ("S min", 0), ("V min", 0),
-                           ("H max", 180), ("S max", 255), ("V max", 255)]:
-        cv2.createTrackbar(name, window, default, 255 if "H" not in name else 180, _nothing)
-
-    while True:
-        frame = camera.capture_frame()
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-        lower = np.array([cv2.getTrackbarPos("H min", window),
-                           cv2.getTrackbarPos("S min", window),
-                           cv2.getTrackbarPos("V min", window)])
-        upper = np.array([cv2.getTrackbarPos("H max", window),
-                           cv2.getTrackbarPos("S max", window),
-                           cv2.getTrackbarPos("V max", window)])
-
-        mask = cv2.inRange(hsv, lower, upper)
-        preview = cv2.bitwise_and(frame, frame, mask=mask)
-        cv2.imshow(window, preview)
-
-        key = cv2.waitKey(30) & 0xFF
-        if key == ord("s"):
-            thresholds = load_hsv_thresholds(config_path)
-            thresholds[label] = {"lower": lower.tolist(), "upper": upper.tolist()}
-            save_hsv_thresholds(thresholds, config_path)
-            print(f"Saved '{label}' = lower={lower.tolist()} upper={upper.tolist()}")
-            break
-        elif key == ord("q"):
-            break
-
-    cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    import sys
-    from raspberry_pi.camera.camera import Camera
-
-    if len(sys.argv) != 2:
-        print("Usage: python -m raspberry_pi.vision.hsv_config <threshold_label>")
-        sys.exit(1)
-
-    cam = Camera()
-    cam.start()
-    interactive_tune(cam, sys.argv[1])
-    cam.stop()
+    try:
+        for index, (name, value) in enumerate(
+            zip(names, bounds["lower"] + bounds["upper"], strict=True)
+        ):
+            cv2.createTrackbar(name, window, value, 179 if index % 3 == 0 else 255, lambda _: None)
+        while True:
+            frame = camera.capture_frame()
+            values = [cv2.getTrackbarPos(name, window) for name in names]
+            candidate = {"lower": values[:3], "upper": values[3:]}
+            try:
+                mask = color_mask(cv2.cvtColor(frame, cv2.COLOR_BGR2HSV), candidate)
+            except ValueError:
+                mask = np.zeros(frame.shape[:2], np.uint8)
+            cv2.imshow(window, cv2.bitwise_and(frame, frame, mask=mask))
+            key = cv2.waitKey(20) & 255
+            if key == ord("s"):
+                thresholds[label] = candidate
+                save_hsv_thresholds(thresholds, config_path)
+                break
+            if key == ord("q"):
+                break
+    finally:
+        cv2.destroyWindow(window)

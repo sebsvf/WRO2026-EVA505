@@ -19,8 +19,6 @@ Modules:
 import cv2
 import numpy as np
 
-
-
 # ==========================================================
 # POLYGON DEFINITIONS
 # ==========================================================
@@ -34,19 +32,15 @@ def create_lane_polygon(frame_shape):
         [
             # upper left
             (int(w * 0.20), int(h * 0.55)),
-
             # upper right
             (int(w * 0.80), int(h * 0.55)),
-
             # bottom right
             (w, h),
-
             # bottom left
-            (0, h)
+            (0, h),
         ],
-        dtype=np.int32
+        dtype=np.int32,
     )
-
 
 
 def create_obstacle_polygon(frame_shape):
@@ -66,19 +60,15 @@ def create_obstacle_polygon(frame_shape):
         [
             # far left upper point
             (int(w * 0.18), int(h * 0.18)),
-
             # far right upper point
             (int(w * 0.82), int(h * 0.18)),
-
             # near right
             (int(w * 0.95), int(h * 0.80)),
-
             # near left
-            (int(w * 0.05), int(h * 0.80))
+            (int(w * 0.05), int(h * 0.80)),
         ],
-        dtype=np.int32
+        dtype=np.int32,
     )
-
 
 
 def create_parking_polygon(frame_shape):
@@ -91,16 +81,7 @@ def create_parking_polygon(frame_shape):
 
     h, w = frame_shape[:2]
 
-    return np.array(
-        [
-            (0, int(h * 0.35)),
-            (w, int(h * 0.35)),
-            (w, h),
-            (0, h)
-        ],
-        dtype=np.int32
-    )
-
+    return np.array([(0, int(h * 0.35)), (w, int(h * 0.35)), (w, h), (0, h)], dtype=np.int32)
 
 
 # ==========================================================
@@ -119,19 +100,11 @@ def create_mask(frame, polygon):
         0
     """
 
-    mask = np.zeros(
-        frame.shape[:2],
-        dtype=np.uint8
-    )
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
 
-    cv2.fillPoly(
-        mask,
-        [polygon],
-        255
-    )
+    cv2.fillPoly(mask, [polygon], 255)
 
     return mask
-
 
 
 def apply_roi(frame, polygon):
@@ -141,17 +114,9 @@ def apply_roi(frame, polygon):
     Pixels outside ROI become black.
     """
 
-    mask = create_mask(
-        frame,
-        polygon
-    )
+    mask = create_mask(frame, polygon)
 
-    return cv2.bitwise_and(
-        frame,
-        frame,
-        mask=mask
-    )
-
+    return cv2.bitwise_and(frame, frame, mask=mask)
 
 
 # ==========================================================
@@ -161,41 +126,23 @@ def apply_roi(frame, polygon):
 
 def apply_lane_roi(frame):
 
-    polygon = create_lane_polygon(
-        frame.shape
-    )
+    polygon = create_lane_polygon(frame.shape)
 
-    return apply_roi(
-        frame,
-        polygon
-    )
-
+    return apply_roi(frame, polygon)
 
 
 def apply_obstacle_roi(frame):
 
-    polygon = create_obstacle_polygon(
-        frame.shape
-    )
+    polygon = create_obstacle_polygon(frame.shape)
 
-    return apply_roi(
-        frame,
-        polygon
-    )
-
+    return apply_roi(frame, polygon)
 
 
 def apply_parking_roi(frame):
 
-    polygon = create_parking_polygon(
-        frame.shape
-    )
+    polygon = create_parking_polygon(frame.shape)
 
-    return apply_roi(
-        frame,
-        polygon
-    )
-
+    return apply_roi(frame, polygon)
 
 
 # ==========================================================
@@ -207,43 +154,24 @@ def draw_roi(frame, polygon):
 
     output = frame.copy()
 
-    cv2.polylines(
-        output,
-        [polygon],
-        True,
-        (0,255,0),
-        2
-    )
+    cv2.polylines(output, [polygon], True, (0, 255, 0), 2)
 
     return output
 
 
-
 def draw_lane_roi(frame):
 
-    return draw_roi(
-        frame,
-        create_lane_polygon(frame.shape)
-    )
-
+    return draw_roi(frame, create_lane_polygon(frame.shape))
 
 
 def draw_obstacle_roi(frame):
 
-    return draw_roi(
-        frame,
-        create_obstacle_polygon(frame.shape)
-    )
-
+    return draw_roi(frame, create_obstacle_polygon(frame.shape))
 
 
 def draw_parking_roi(frame):
 
-    return draw_roi(
-        frame,
-        create_parking_polygon(frame.shape)
-    )
-
+    return draw_roi(frame, create_parking_polygon(frame.shape))
 
 
 def draw_all_rois(frame):
