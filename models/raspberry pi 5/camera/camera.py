@@ -1,107 +1,254 @@
-import time
 import logging
+import math
+import time
 
 import numpy as np
 
 try:
     from picamera2 import Picamera2
-    _PICAMERA_AVAILABLE = True
 except ImportError:
-    # Allows the module to be imported (and unit-tested) on a dev machine
-    # that does not have picamera2 installed, e.g. a laptop.
-    _PICAMERA_AVAILABLE = False
+    Picamera2 = None
+
 
 logger = logging.getLogger("camera")
 
 
 class CameraFault(Exception):
-    """Raised when the camera stops delivering fresh frames."""
+    """Error de inicio, captura o comunicación con la cámara."""
 
 
 class Camera:
-    def __init__(self, resolution=(640, 480), target_fps=25,
-                 stale_frame_timeout_s=1.0):
+    def __init__(
+        self,
+        resolution=(640, 480),
+        target_fps=25,
+        stale_frame_timeout_s=1.0,
+        simulated=False,
+    ):
         self.resolution = tuple(resolution)
-        self.target_fps = target_fps
-        self.stale_frame_timeout_s = stale_frame_timeout_s
+        self.target_fps = float(target_fps)
+        self.stale_frame_timeout_s = float(stale_frame_timeout_s)
 
+        if (
+            len(self.resolution) != 2
+            or any(
+                not isinstance(v, int) or v <= 0
+                for v in self.resolution
+            )
+        ):
+            raise ValueError("resolution debe contener dos enteros positivos")
+
+        for value in (self.target_fps, self.stale_frame_timeout_s):
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError("FPS y timeout deben ser positivos y finitos")
+
+        self._simulated = bool(simulated)
         self._picam2 = None
+        self._started = False
+        self._faulted = False
         self._last_frame_ts = None
-        self._simulated = not _PICAMERA_AVAILABLE
+        self.analogue_gain = None
 
-        if self._simulated:
-            logger.warning(
-                "picamera2 not available -- Camera is running in SIMULATED "
-                "mode and will yield synthetic blank frames. This is only "
-                "useful for running the FSM/vision code off-target."
+    @property
+    def simulated(self):
+        return self._simulated
+
+    def _require_started(self):
+        if not self._started:
+            raise CameraFault("Primero debes llamar a camera.start()")
+        if self._faulted:
+            raise CameraFault(
+                "La cámara falló; llama a stop() y start() para reiniciarla"
             )
 
     def start(self):
-        """Open and configure the camera. Call once before capture_frame()."""
-        if self._simulated:
-            self._last_frame_ts = time.monotonic()
+        if self._started:
+            self._require_started()
             return
 
-        self._picam2 = Picamera2()
-        config = self._picam2.create_video_configuration(
-            main={"size": self.resolution, "format": "RGB888"},
-            controls={"FrameRate": self.target_fps},
+        self._faulted = False
+        self._last_frame_ts = None
+        self.analogue_gain = None
+
+        if self._simulated:
+            self._started = True
+            logger.warning("Cámara simulada: se entregarán imágenes negras")
+            return
+
+        if Picamera2 is None:
+            raise CameraFault(
+                "Picamera2 no está instalado. "
+                "Para pruebas usa Camera(simulated=True)"
+            )
+
+        cam = None
+        try:
+            cam = Picamera2()
+            config = cam.create_video_configuration(
+                main={
+                    "size": self.resolution,
+                    # Picamera2 RGB888 produce un array BGR para OpenCV.
+                    "format": "RGB888",
+                },
+                controls={"FrameRate": self.target_fps},
+                # No reutilizar el último frame guardado.
+                queue=False,
+            )
+            cam.configure(config)
+            cam.start()
+        except Exception as exc:
+            if cam is not None:
+                try:
+                    cam.close()
+                except Exception:
+                    logger.exception("No se pudo liberar la cámara")
+            raise CameraFault(f"No se pudo iniciar la cámara: {exc}") from exc
+
+        self._picam2 = cam
+        self._started = True
+        logger.info(
+            "Cámara iniciada: %sx%s, objetivo %.1f FPS",
+            *self.resolution,
+            self.target_fps,
         )
-        self._picam2.configure(config)
-        self._picam2.start()
-        # Give the sensor a moment to settle (auto-exposure convergence
-        # before calibration.py locks it down).
-        time.sleep(0.5)
-        self._last_frame_ts = time.monotonic()
-        logger.info("Camera started at %sx%s @ %s fps target",
-                    *self.resolution, self.target_fps)
 
-    def set_manual_controls(self, exposure_us=None, awb_gains=None):
-        """
-        Lock exposure/white balance. Used by calibration.py once the
-        camera has converged on good auto values on-site, so the HSV
-        thresholds stay valid for the rest of the run.
-        """
-        if self._simulated or self._picam2 is None:
-            return
-        controls = {"AeEnable": False, "AwbEnable": False}
-        if exposure_us is not None:
-            controls["ExposureTime"] = int(exposure_us)
-        if awb_gains is not None:
-            controls["ColourGains"] = tuple(awb_gains)
-        self._picam2.set_controls(controls)
-        logger.info("Camera manual controls locked: %s", controls)
-
-    def capture_frame(self) -> np.ndarray:
-        """
-        Return the latest frame as a BGR NumPy array (OpenCV convention).
-        Raises CameraFault if no frame could be obtained within the
-        configured staleness timeout.
-        """
-        now = time.monotonic()
-
-        if self._simulated:
-            self._last_frame_ts = now
-            return np.zeros((self.resolution[1], self.resolution[0], 3),
-                             dtype=np.uint8)
+    def _capture(self, metadata=False):
+        """Espera limitada; después de un fallo exige reinicio."""
+        self._require_started()
 
         try:
-            frame_rgb = self._picam2.capture_array()
-        except Exception as exc:  # pragma: no cover - hardware dependent
-            if now - self._last_frame_ts > self.stale_frame_timeout_s:
-                raise CameraFault(f"No frame for over "
-                                   f"{self.stale_frame_timeout_s}s: {exc}")
-            raise
+            if metadata:
+                job = self._picam2.capture_metadata(wait=False)
+            else:
+                job = self._picam2.capture_array("main", wait=False)
 
-        self._last_frame_ts = now
-        # picamera2 delivers RGB; OpenCV pipeline downstream expects BGR.
-        return frame_rgb[:, :, ::-1]
+            return job.get_result(timeout=self.stale_frame_timeout_s)
+
+        except Exception as exc:
+            # No acumular nuevos trabajos si uno quedó pendiente.
+            self._faulted = True
+            self._last_frame_ts = None
+            raise CameraFault(
+                f"Falló la captura o venció el timeout "
+                f"de {self.stale_frame_timeout_s}s: {exc}"
+            ) from exc
+
+    def capture_metadata(self):
+        self._require_started()
+
+        if self._simulated:
+            return {}
+
+        return self._capture(metadata=True)
+
+    def set_auto_controls(self):
+        """Activa AE/AWB antes de una nueva calibración."""
+        self._require_started()
+
+        if not self._simulated:
+            self._picam2.set_controls({
+                "AeEnable": True,
+                "AwbEnable": True,
+            })
+
+        self.analogue_gain = None
+
+    def set_manual_controls(
+        self,
+        exposure_us=None,
+        awb_gains=None,
+        analogue_gain=None,
+    ):
+
+        self._require_started()
+
+        if self._simulated:
+            return
+
+        controls = {}
+
+        if exposure_us is not None or analogue_gain is not None:
+            if exposure_us is None or analogue_gain is None:
+                raise ValueError(
+                    "Proporciona exposure_us y analogue_gain juntos"
+                )
+
+            exposure = float(exposure_us)
+            gain = float(analogue_gain)
+
+            if (
+                not math.isfinite(exposure)
+                or exposure < 1
+                or not math.isfinite(gain)
+                or gain <= 0
+            ):
+                raise ValueError("Exposición o ganancia inválidas")
+
+            controls.update({
+                "AeEnable": False,
+                "ExposureTime": int(exposure),
+                "AnalogueGain": gain,
+            })
+
+        if awb_gains is not None:
+            gains = tuple(float(v) for v in awb_gains)
+            if len(gains) != 2 or any(
+                not math.isfinite(v) or v <= 0 for v in gains
+            ):
+                raise ValueError("awb_gains debe contener dos valores positivos")
+
+            controls.update({
+                "AwbEnable": False,
+                "ColourGains": gains,
+            })
+
+        if controls:
+            self._picam2.set_controls(controls)
+            if analogue_gain is not None:
+                self.analogue_gain = float(analogue_gain)
+
+            logger.info("Controles manuales solicitados: %s", controls)
+
+    def capture_frame(self) -> np.ndarray:
+        """Devuelve una imagen BGR; CameraFault si falla la captura."""
+        self._require_started()
+
+        if self._simulated:
+            width, height = self.resolution
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
+        else:
+            frame = self._capture()
+
+        if (
+            not isinstance(frame, np.ndarray)
+            or frame.ndim != 3
+            or frame.shape[2] != 3
+            or frame.size == 0
+        ):
+            self._faulted = True
+            self._last_frame_ts = None
+            raise CameraFault("La cámara entregó un frame inválido")
+
+        self._last_frame_ts = time.monotonic()
+        return frame
 
     def is_healthy(self) -> bool:
-        if self._last_frame_ts is None:
-            return False
-        return (time.monotonic() - self._last_frame_ts) < self.stale_frame_timeout_s
+        return (
+            self._started
+            and not self._faulted
+            and self._last_frame_ts is not None
+            and time.monotonic() - self._last_frame_ts
+            < self.stale_frame_timeout_s
+        )
 
     def stop(self):
-        if not self._simulated and self._picam2 is not None:
-            self._picam2.stop()
+        cam = self._picam2
+        self._picam2 = None
+        self._started = False
+        self._last_frame_ts = None
+
+        if cam is not None:
+            try:
+                cam.stop()
+            finally:
+                cam.close()
