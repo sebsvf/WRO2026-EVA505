@@ -142,7 +142,12 @@ def estimate_pillar(
     y1 = int(height * pillar_roi_y_range[1])
 
 
-    roi = frame[y0:y1, :]
+    roi = apply_obstacle_roi(frame)
+
+    hsv = cv2.cvtColor(
+        roi,
+        cv2.COLOR_BGR2HSV
+    )
 
 
     hsv = cv2.cvtColor(
