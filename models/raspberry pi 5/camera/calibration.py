@@ -1,11 +1,9 @@
-
 import logging
 import math
 import time
 
 import cv2
 import numpy as np
-
 
 logger = logging.getLogger("calibration")
 
@@ -34,10 +32,7 @@ def lock_exposure_and_white_balance(camera, settle_time_s=2.0):
     missing = [key for key in required if metadata.get(key) is None]
 
     if missing:
-        raise RuntimeError(
-            "No se puede calibrar; faltan metadatos: "
-            + ", ".join(missing)
-        )
+        raise RuntimeError("No se puede calibrar; faltan metadatos: " + ", ".join(missing))
 
     exposure_us = int(metadata["ExposureTime"])
     analogue_gain = float(metadata["AnalogueGain"])
@@ -74,14 +69,11 @@ def _validate_hsv_bounds(bounds):
             or np.any(value < 0)
             or np.any(value > np.array([179, 255, 255]))
         ):
-            raise ValueError(
-                "HSV inválido: H debe estar en 0–179; S y V en 0–255"
-            )
+            raise ValueError("HSV inválido: H debe estar en 0–179; S y V en 0–255")
 
     if np.any(lower > upper):
         raise ValueError(
-            "lower debe ser <= upper. "
-            "Para intervalos separados usa una lista de rangos"
+            "lower debe ser <= upper. Para intervalos separados usa una lista de rangos"
         )
 
     return lower.astype(np.uint8), upper.astype(np.uint8)
@@ -112,9 +104,7 @@ def verify_hsv_thresholds(
             or roi_mask.shape != frame.shape[:2]
             or roi_mask.dtype != np.uint8
         ):
-            raise ValueError(
-                "roi_mask debe ser uint8 y tener el tamaño del frame"
-            )
+            raise ValueError("roi_mask debe ser uint8 y tener el tamaño del frame")
 
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     results = {}
