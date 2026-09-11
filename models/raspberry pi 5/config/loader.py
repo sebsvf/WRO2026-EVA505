@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 
 import yaml
-from raspberry_pi.vision.common import roi_slice
+from vision.common import roi_slice
 from vision.hsv_config import DEFAULT_CONFIG, as_numpy_bounds
 
 

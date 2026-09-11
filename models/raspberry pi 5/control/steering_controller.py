@@ -1,7 +1,7 @@
 import math
 import time
 
-from raspberry_pi.control.pid import PID
+from navigation.pid import PID
 
 
 class SteeringController:
@@ -12,7 +12,8 @@ class SteeringController:
         curvature_gain: float,
         center_deg: float = 90.0,
         max_angle_deg: float = 30.0,
-        max_rate_deg_s: float = None,
+        max_rate_deg_s: float | None = None,
+        direction: int = 1,
     ):
         """
         max_angle_deg:
@@ -29,10 +30,7 @@ class SteeringController:
         if max_angle_deg < 0.0:
             raise ValueError("max_angle_deg debe ser >= 0")
 
-        if not (
-            0.0 <= center_deg - max_angle_deg
-            <= center_deg + max_angle_deg <= 180.0
-        ):
+        if not (0.0 <= center_deg - max_angle_deg <= center_deg + max_angle_deg <= 180.0):
             raise ValueError("El rango angular debe estar entre 0 y 180°")
 
         if max_rate_deg_s is not None:
@@ -43,6 +41,9 @@ class SteeringController:
         self.max_angle_deg = max_angle_deg
         self.curvature_gain = curvature_gain
         self.max_rate_deg_s = max_rate_deg_s
+        if direction not in (-1, 1):
+            raise ValueError("direction debe ser +1 o -1")
+        self.direction = direction
 
         self._pid = PID(
             kp=kp,
@@ -57,7 +58,7 @@ class SteeringController:
     def _clamp(value, lower, upper):
         return max(lower, min(upper, value))
 
-    def reset(self, current_angle_deg: float = None):
+    def reset(self, current_angle_deg: float | None = None):
         """
         Reinicia el controlador.
 
@@ -65,17 +66,12 @@ class SteeringController:
         la continuidad del limitador. Si se omite, se asume el centro.
         Esta función no envía ninguna orden al servo.
         """
-        angle = (
-            self.center_deg
-            if current_angle_deg is None
-            else float(current_angle_deg)
-        )
+        angle = self.center_deg if current_angle_deg is None else float(current_angle_deg)
 
         if not math.isfinite(angle):
             raise ValueError("current_angle_deg debe ser finito")
 
         self._pid.reset()
-        self._pillar_bias_deg = 0.0
         self._prev_time = None
         self._last_angle = self._clamp(
             angle,
@@ -83,43 +79,11 @@ class SteeringController:
             self.center_deg + self.max_angle_deg,
         )
 
-    def apply_pillar_offset(
-        self,
-        target_bias_deg: float,
-        ramp_step_deg: float,
-    ):
-        """
-        Conserva la interfaz de la FSM actual.
-        ramp_step_deg es el cambio máximo POR LLAMADA.
-        """
-        if not all(
-            math.isfinite(value)
-            for value in (target_bias_deg, ramp_step_deg)
-        ):
-            raise ValueError("El desplazamiento y el paso deben ser finitos")
-
-        if ramp_step_deg < 0.0:
-            raise ValueError("ramp_step_deg debe ser >= 0")
-
-        target = self._clamp(
-            target_bias_deg,
-            -self.max_angle_deg,
-            self.max_angle_deg,
-        )
-
-        delta = self._clamp(
-            target - self._pillar_bias_deg,
-            -ramp_step_deg,
-            ramp_step_deg,
-        )
-
-        self._pillar_bias_deg += delta
-
     def compute(
         self,
         lane_error: float,
         curvature: float,
-        now: float = None,
+        now: float | None = None,
     ) -> float:
         """
         Entradas normalizadas en [-1, 1].
@@ -127,10 +91,7 @@ class SteeringController:
         """
         now = time.monotonic() if now is None else float(now)
 
-        if not all(
-            math.isfinite(value)
-            for value in (lane_error, curvature, now)
-        ):
+        if not all(math.isfinite(value) for value in (lane_error, curvature, now)):
             raise ValueError("Las entradas deben ser finitas")
 
         dt = 0.0
@@ -144,17 +105,15 @@ class SteeringController:
 
         pd_output = self._pid.update(lane_error, now=now)
 
-        feedforward = (
-            self.curvature_gain * curvature * self.max_angle_deg
-        )
+        feedforward = self.curvature_gain * curvature * self.max_angle_deg
 
         offset = self._clamp(
-            pd_output + feedforward + self._pillar_bias_deg,
+            pd_output + feedforward,
             -self.max_angle_deg,
             self.max_angle_deg,
         )
 
-        target_angle = self.center_deg + offset
+        target_angle = self.center_deg + self.direction * offset
 
         if self.max_rate_deg_s is not None:
             # Primera llamada: conserva el ángulo inicial.

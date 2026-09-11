@@ -1,23 +1,21 @@
 
-
-def set_speed(speed_mm_s: float) -> str:
-    return f"SET_SPEED:{speed_mm_s:.1f}"
+import math
 
 
-def set_steering(angle_deg: float) -> str:
-    return f"SET_STEERING:{angle_deg:.1f}"
+def drive(power: float, angle_deg: float) -> str:
+    if not all(math.isfinite(v) for v in (power, angle_deg)):
+        raise ValueError("Control must be finite")
+    if not -1 <= power <= 1 or not 0 <= angle_deg <= 180:
+        raise ValueError("Control outside protocol range")
+    return f"DRIVE:{power:.3f}:{angle_deg:.1f}"
 
 
 def stop() -> str:
     return "STOP"
 
 
-def set_mode_park() -> str:
-    return "MODE:PARK"
-
-
-def set_mode_drive() -> str:
-    return "MODE:DRIVE"
+def arm() -> str:
+    return "ARM"
 
 
 def ping() -> str:
