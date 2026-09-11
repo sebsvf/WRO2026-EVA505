@@ -1,4 +1,3 @@
-"""Temporal navigation guards; no distance or velocity is inferred."""
 
 from dataclasses import dataclass
 

@@ -1,4 +1,3 @@
-"""Timestamped PID with conditional anti-windup and filtered derivative."""
 
 import math
 import time
