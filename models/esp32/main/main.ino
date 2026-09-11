@@ -1,14 +1,3 @@
-/*
- * main.ino
- * ---------
- * ESP32 firmware entry point. Scope is intentionally narrow (per
- * documentation/software_architecture.md Sec 4.1/4.3): parse commands
- * from the Raspberry Pi over UART, run the deterministic velocity PID
- * and servo actuation, report encoder telemetry back, and enforce the
- * communication watchdog fail-safe. No perception or FSM logic lives
- * here -- that is entirely the Raspberry Pi's responsibility.
- */
-
 #include "../config.h"
 #include "../motor/motor_control.h"
 #include "../servo/servo_control.h"
@@ -45,7 +34,7 @@ void loop() {
     _last_pid_update_ms = now;
   }
 
-  // Telemetry at 20 Hz -- enough for the Pi's watchdog / logging
+  // Telemetry at 20 Hz - enough for the Pi's watchdog / logging
   // without flooding the link.
   if (now - _last_telemetry_ms >= 50) {
     Serial.print("ENC:");
@@ -92,8 +81,7 @@ static void _handle_line(const String &line) {
     Serial.println("PONG");
 
   } else {
-    // Unrecognized command -- report a fault rather than silently
-    // ignoring it, so protocol drift is visible during testing.
+  
     Serial.println("STATUS:FAULT");
   }
 }
