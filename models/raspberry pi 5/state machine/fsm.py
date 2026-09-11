@@ -24,6 +24,7 @@ from control.steering_controller import SteeringController
 from control import commands
 
 
+
 logger = logging.getLogger("fsm")
 
 
@@ -36,7 +37,13 @@ class FSMContext:
 
     pillar: PillarEstimate = field(
         default_factory=lambda: PillarEstimate(
-            False,None,None,0,0
+            False,
+            None,
+            None,
+            0,
+            0,
+            0,
+            None
         )
     )
 
@@ -293,7 +300,7 @@ class RobotFSM:
             frame,
             self._hsv,
             self._lane_roi
-        )
+        )   
 
 
         self.ctx.pillar = estimate_pillar(
@@ -307,15 +314,37 @@ class RobotFSM:
 
             self.state = State.FOLLOW_TRACK
 
+            self.steering.apply_pillar_offset(
+                0.0,
+                self.pillar_ramp_deg
+            )
+
             return
 
 
 
-        bias = (
-            self.pillar_bias_deg
-            if self.ctx.pillar.pillar_color=="red"
-            else -self.pillar_bias_deg
-        )
+        if self.ctx.pillar.pillar_color == "red":
+            bias = (
+                abs(self.ctx.pillar.offset)
+                *
+                self.pillar_bias_deg
+            )
+
+
+        elif self.ctx.pillar.pillar_color == "green":
+
+        # Green pillar -> keep left
+            bias = (
+                -abs(self.ctx.pillar.offset)
+                *
+                self.pillar_bias_deg
+            )
+
+
+        else:
+
+            bias = 0.0
+
 
 
         self.steering.apply_pillar_offset(
@@ -332,8 +361,7 @@ class RobotFSM:
 
         self.serial_link.send(
             commands.set_steering(angle)
-        )
-
+    )
 
 
     def _handle_parking_search(self, frame):

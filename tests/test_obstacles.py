@@ -24,7 +24,7 @@ CONFIG_PATH = (
     "config.yaml"
 )
 
-IMAGE_PATH = ("tests/datastets/obstacles/images/WIN_20260108_15_33_46_Pro_jpg.rf.adb8f648564ad4f7d17026a699b77e78.jpg")
+IMAGE_PATH = ("tests/datastets/obstacles/images 1/WIN_20260108_15_31_15_Pro_jpg.rf.7046dbe756176b67329f0ca8c4ab2adf.jpg")
 
 
 # ==============================
