@@ -1,3 +1,5 @@
+"""Timestamped PID with conditional anti-windup and filtered derivative."""
+
 import math
 import time
 
@@ -10,24 +12,26 @@ class PID:
         kd=0.0,
         output_limits=(None, None),
         integral_limits=(None, None),
+        derivative_tau_s=0.08,
     ):
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-
+        if not all(math.isfinite(v) for v in (kp, ki, kd, derivative_tau_s)):
+            raise ValueError("PID parameters must be finite")
+        if derivative_tau_s < 0:
+            raise ValueError("Derivative time constant must be nonnegative")
+        self.kp, self.ki, self.kd = kp, ki, kd
         self.output_min, self.output_max = output_limits
         self.integral_min, self.integral_max = integral_limits
-
+        self.derivative_tau_s = derivative_tau_s
         for lower, upper in (output_limits, integral_limits):
+            if any(v is not None and not math.isfinite(v) for v in (lower, upper)):
+                raise ValueError("PID limits must be finite or None")
             if lower is not None and upper is not None and lower > upper:
-                raise ValueError("El límite mínimo debe ser <= al máximo")
-
+                raise ValueError("PID lower limit exceeds upper")
         self.reset()
 
     def reset(self):
-        self._integral = 0.0
-        self._prev_error = None
-        self._prev_time = None
+        self._integral = self._derivative = 0.0
+        self._prev_error = self._prev_time = None
 
     @staticmethod
     def _clamp(value, lower, upper):
@@ -37,45 +41,28 @@ class PID:
             value = min(upper, value)
         return value
 
-    def update(self, error: float, now: float = None) -> float:
+    def update(self, error, now=None):
         now = time.monotonic() if now is None else float(now)
-        error = float(error)
-
-        if not math.isfinite(now) or not math.isfinite(error):
-            raise ValueError("error y now deben ser números finitos")
-
-        dt = 0.0
-        if self._prev_time is not None:
-            dt = now - self._prev_time
-            if dt <= 0.0:
-                raise ValueError("now debe aumentar entre llamadas")
-
-        p_term = self.kp * error
-
-        # No acumular integral mientras está desactivada.
-        if self.ki != 0.0:
-            self._integral = self._clamp(
-                self._integral + error * dt,
-                self.integral_min,
-                self.integral_max,
-            )
-        else:
-            self._integral = 0.0
-
-        i_term = self.ki * self._integral
-
-        # La primera llamada no tiene derivada.
-        d_term = 0.0
-        if self._prev_error is not None and dt > 0.0:
-            d_term = self.kd * (error - self._prev_error) / dt
-
-        output = self._clamp(
-            p_term + i_term + d_term,
-            self.output_min,
-            self.output_max,
+        if not math.isfinite(error) or not math.isfinite(now):
+            raise ValueError("error/now must be finite")
+        dt = 0 if self._prev_time is None else now - self._prev_time
+        if self._prev_time is not None and dt <= 0:
+            raise ValueError("now must increase")
+        if dt > 0 and self._prev_error is not None:
+            raw = (error - self._prev_error) / dt
+            alpha = dt / (self.derivative_tau_s + dt)
+            self._derivative += alpha * (raw - self._derivative)
+        candidate = (
+            self._clamp(self._integral + error * dt, self.integral_min, self.integral_max)
+            if self.ki
+            else 0
         )
-
-        self._prev_error = error
-        self._prev_time = now
-
+        base = self.kp * error + self.kd * self._derivative
+        proposed = base + self.ki * candidate
+        saturated = self._clamp(proposed, self.output_min, self.output_max)
+        # Integrate if unsaturated, or if integral change brings output out of saturation.
+        if proposed == saturated or (proposed - saturated) * self.ki * error <= 0:
+            self._integral = candidate
+        output = self._clamp(base + self.ki * self._integral, self.output_min, self.output_max)
+        self._prev_error, self._prev_time = error, now
         return float(output)
